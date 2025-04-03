@@ -17,7 +17,7 @@ public:
         for (int i = m_start; i <= m_end; ++i) {
             sum += i;
         }
-//        std::this_thread::sleep_for(std::chrono::seconds(5));
+//        std::this_thread::sleep_for(std::chrono::seconds(2));
         return sum;
     }
 private:

@@ -1,6 +1,6 @@
 #include "threadpool.h"
 
-const size_t MAX_TASK_NUMBERS = 1 << 12;
+const size_t MAX_TASK_NUMBERS =  1 << 12;
 const size_t MAX_THREAD_NUMBERS = 1 << 7;
 const size_t MAX_IDEL_TIMEOUTS = 1;
 
@@ -45,13 +45,12 @@ void ThreadPool::start(size_t initThreads)
 
 Res ThreadPool::submitTask(std::shared_ptr<Task> task)
 {
-    if (m_running) {
         std::unique_lock lock(m_mutex);
         // 提交任务，超时时间1s
         if (!m_fullCond.wait_for(lock, std::chrono::seconds(1), [&]() -> bool {
             return m_taskQueue.size() <= m_maxTasks;
             })) {
-            std::cerr << "task submit failed as taskqueue is fulled!";
+            std::cerr << "task submit failed as taskqueue is fulled!\n";
             return Res(task, true);
         }
 
@@ -69,7 +68,6 @@ Res ThreadPool::submitTask(std::shared_ptr<Task> task)
             std::cout << "creating threads, and current threads = " << m_currThreads << std::endl;
         }
         std::cout << "submit task...\n";
-    }
     return Res(task);
 }
 
