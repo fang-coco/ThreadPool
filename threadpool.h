@@ -11,101 +11,8 @@
 #include <atomic>
 #include <iostream>
 #include <chrono>
+#include <future>
 
-class Any {
-public:
-    Any() = default;
-    ~Any() = default;
-
-    Any(const Any&) = delete;
-    Any& operator =(const Any&) = delete;
-
-    Any(Any&&) = default;
-    Any& operator =(Any&&) = default;
-
-    template <typename T>
-    Any(T data)
-        : m_base(std::make_unique<Devire<T>>(data)) {}
-
-    template <typename T>
-    T cast() {
-        auto ptr = dynamic_cast<Devire<T>*>(m_base.get());
-        if(ptr == nullptr) {
-            throw "type is unmatch!";
-        }
-        return ptr->m_data;
-    }
-
-private:
-    class Base
-    {
-    public:
-        Base() = default;
-        virtual ~Base() = default;
-    };
-
-    template <typename T>
-    class Devire : public Base
-    {
-    public:
-        Devire(T data) : m_data(data) {}
-        ~Devire() = default;
-    public:
-        T m_data;
-    };
-
-public:
-    std::unique_ptr<Base> m_base;
-};
-
-class Semaphore
-{
-public:
-    Semaphore(size_t resLimit = 0);
-
-    void get();
-    void post();
-    void setValid(bool newValid);
-
-private:
-    std::mutex m_mutex;
-    std::condition_variable m_cond;
-    size_t m_resLimit;
-    bool m_valid;
-};
-
-class Task;
-
-class Res {
-public:
-    Res(std::shared_ptr<Task> task, bool execed = false);
-    ~Res() = default;
-
-    Any get();
-    void setAny(Any any);
-private:
-    std::atomic_bool m_execed;
-    std::shared_ptr<Task> m_task;
-    Semaphore m_semaphore;
-
-    Any m_any;
-};
-
-class Task {
-public:
-    Task() = default;
-    ~Task() {
-        m_res = nullptr;
-    };
-
-
-    virtual Any run() = 0;
-    void exec();
-    void setRes(Res *newRes);
-
-private:
-    Res * m_res;
-};
 
 class Thread {
 public:
@@ -134,7 +41,49 @@ public:
     ~ThreadPool();
 
     void start(size_t initThreads = std::thread::hardware_concurrency());
-    Res submitTask(std::shared_ptr<Task> task);
+
+    template <typename Func, typename... Args>
+    auto submitTask(Func&& func, Args&&... args) -> std::future<decltype(func(args...))> {
+        using RType = decltype(func(args...));
+
+        auto task = std::make_shared<std::packaged_task<RType()>>(
+            std::bind(std::forward<Func>(func), std::forward<Args>(args)...)
+        );
+
+        std::future<RType> res = task->get_future();
+
+        std::unique_lock lock(m_mutex);
+            // 提交任务，超时时间1s
+        if (!m_fullCond.wait_for(lock, std::chrono::seconds(1), [&]() -> bool {
+                return m_taskQueue.size() <= m_maxTasks;
+            })) {
+
+            std::cerr << "task submit failed as taskqueue is fulled!\n";
+            auto task = std::make_shared<std::packaged_task<RType()>>(
+                    []()-> RType { return RType(); }
+            );
+            (*task)();
+            return task->get_future();
+        }
+
+        // 提交成功，任务放入任务队列
+        m_taskQueue.emplace([task]() -> void { // 这里必须按值传递，不然task对象被释放了
+            (*task)();
+        });
+
+        // 任务队列中有任务了，通知阻塞在空队列的线程
+        m_emptyCond.notify_all();
+
+        if (m_poolMode == PoolMode::MODE_CACHED
+            && m_taskQueue.size() > m_idelThreads) {
+            size_t lastNums = m_currThreads;
+            m_currThreads = std::min(m_maxThreads, m_currThreads << 1);
+            creatThreads(m_currThreads - lastNums);
+            std::cout << "creating threads, and current threads = " << m_currThreads << std::endl;
+        }
+        std::cout << "submit task...\n";
+        return res;
+    }
 
     void setPoolMode(PoolMode newPoolMode);
 
@@ -150,7 +99,7 @@ private:
 
 private:
     std::unordered_map<size_t, std::unique_ptr<Thread>> m_threads;
-    std::queue<std::shared_ptr<Task>> m_taskQueue;
+    std::queue<std::function<void()>> m_taskQueue;
     PoolMode m_poolMode;
     std::atomic_bool m_running;
 

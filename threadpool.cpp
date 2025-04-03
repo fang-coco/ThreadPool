@@ -1,6 +1,6 @@
 #include "threadpool.h"
 
-const size_t MAX_TASK_NUMBERS = 1 << 12;
+const size_t MAX_TASK_NUMBERS =  4; //1 << 12;
 const size_t MAX_THREAD_NUMBERS = 1 << 7;
 const size_t MAX_IDEL_TIMEOUTS = 1;
 
@@ -43,51 +43,16 @@ void ThreadPool::start(size_t initThreads)
     }
 }
 
-Res ThreadPool::submitTask(std::shared_ptr<Task> task)
-{
-    if (m_running) {
-        std::unique_lock lock(m_mutex);
-        // 提交任务，超时时间1s
-        if (!m_fullCond.wait_for(lock, std::chrono::seconds(1), [&]() -> bool {
-            return m_taskQueue.size() <= m_maxTasks;
-            })) {
-            std::cerr << "task submit failed as taskqueue is fulled!";
-            return Res(task, true);
-        }
-
-        // 提交成功，任务放入任务队列
-        m_taskQueue.emplace(task);
-
-        // 任务队列中有任务了，通知阻塞在空队列的线程
-        m_emptyCond.notify_all();
-
-        if (m_poolMode == PoolMode::MODE_CACHED
-            && m_taskQueue.size() > m_idelThreads) {
-            size_t lastNums = m_currThreads;
-            m_currThreads = std::min(m_maxThreads, m_currThreads << 1);
-            creatThreads(m_currThreads - lastNums);
-            std::cout << "creating threads, and current threads = " << m_currThreads << std::endl;
-        }
-        std::cout << "submit task...\n";
-    }
-    return Res(task);
-}
-
 void ThreadPool::threadFunc(size_t threadID)
 {
     auto lastTime = std::chrono::high_resolution_clock().now();
     for (;;) {
-        std::shared_ptr<Task> task;
+        std::function<void()> task;
         {
             std::unique_lock lock(m_mutex);
-            m_idelThreads--;
-
             while (m_taskQueue.empty()) {
                 if (!m_running) {
                     m_threads.erase(threadID);
-                    m_currThreads--;
-                    m_idelThreads--;
-//                    m_emptyCond.notify_all();
                     m_execCond.notify_all();
                     std::cout << threadID << " exit as threadpool was stopped!\n";
                     return;
@@ -98,7 +63,8 @@ void ThreadPool::threadFunc(size_t threadID)
                         auto now = std::chrono::high_resolution_clock().now();
                         auto dur = std::chrono::duration_cast<std::chrono::seconds>(now - lastTime);
                         if (dur.count() >= MAX_IDEL_TIMEOUTS
-                            && m_currThreads > m_initThreads) {
+                         && m_currThreads > m_initThreads) {
+
                             m_threads.erase(threadID);
                             m_currThreads--;
                             m_idelThreads--;
@@ -111,6 +77,7 @@ void ThreadPool::threadFunc(size_t threadID)
                     m_emptyCond.wait(lock);
                 }
             }
+            m_idelThreads--;
 
             // 拿到队首的任务
             task = m_taskQueue.front();
@@ -124,7 +91,7 @@ void ThreadPool::threadFunc(size_t threadID)
         }
         std::cout << threadID << " take task and running!\n";
         if (task != nullptr)
-            task->exec();
+            task();
         std::cout << threadID << " exec!\n";
         m_idelThreads++;
         lastTime = std::chrono::high_resolution_clock().now();
@@ -185,68 +152,4 @@ void Thread::start()
     std::thread t(m_func, m_threadID);
     // 线程分离主线程，即使主线程结束，也不影响子线程
     t.detach();
-}
-
-Semaphore::Semaphore(size_t resLimit)
-    : m_resLimit(resLimit)
-    , m_valid(true)
-{}
-
-void Semaphore::get()
-{
-    if (m_valid) {
-        std::unique_lock lock(m_mutex);
-        m_cond.wait(lock, [&]() -> bool {
-            return m_resLimit > 0;
-        });
-        m_resLimit--;
-    }
-}
-
-void Semaphore::post()
-{
-    if (m_valid) {
-        std::unique_lock lock(m_mutex);
-        m_resLimit++;
-        m_cond.notify_all();
-    }
-}
-
-void Semaphore::setValid(bool newValid)
-{
-    m_valid = newValid;
-}
-
-void Task::exec()
-{
-    m_res->setAny(std::move(run()));
-}
-
-void Task::setRes(Res *newRes)
-{
-    m_res = newRes;
-}
-
-Res::Res(std::shared_ptr<Task> task, bool execed)
-    : m_task(task)
-    , m_execed(execed)
-{
-    m_task->setRes(this);
-}
-
-Any Res::get()
-{
-    // 如果任务提交失败，但是想去拿到返回值，将产生空指针引用
-    if (m_execed) {
-        throw "task submit failed, and no res";
-    }
-    m_semaphore.get();
-    return std::move(m_any);
-}
-
-void Res::setAny(Any any)
-{
-    if (m_execed) return;
-    m_any = std::move(any);
-    m_semaphore.post();
 }
